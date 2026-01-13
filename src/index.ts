@@ -1,1 +1,1 @@
-export { all } from '../lib/index'
+export { all, allSettled } from '../lib/index'

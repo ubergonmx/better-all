@@ -27,30 +27,35 @@ type AllResult<T extends Record<string, (...args: any[]) => any>> = {
   [K in keyof T]: TaskResult<T[K]>
 }
 
+// Settled result types for allSettled
+type SettledFulfilled<T> = {
+  status: 'fulfilled'
+  value: T
+}
+
+type SettledRejected = {
+  status: 'rejected'
+  reason: any
+}
+
+type SettledResult<T> = SettledFulfilled<T> | SettledRejected
+
+// Result type for allSettled - all tasks as settled results
+type AllSettledResult<T extends Record<string, (...args: any[]) => any>> = {
+  [K in keyof T]: SettledResult<TaskResult<T[K]>>
+}
+
 /**
- * Execute tasks with automatic dependency resolution.
- *
- * @example
- * const { a, b, c } = await all({
- *   a() { return 1 },
- *   async b() { return 'hello' },
- *   async c() { return (await this.$.a) + 10 }
- * })
+ * Internal core implementation for executing tasks with automatic dependency resolution.
+ * This is shared between `all` and `allSettled`.
  */
-export function all<T extends Record<string, any>>(
-  tasks: T &
-    ThisType<{
-      $: {
-        [K in keyof T]: ReturnType<T[K]> extends Promise<infer R>
-          ? Promise<R>
-          : Promise<ReturnType<T[K]>>
-      }
-    }> & {
-      [P in keyof T]: T[P] extends (...args: any[]) => any ? T[P] : never
-    }
-): Promise<AllResult<T>> {
+function executeTasksInternal<T extends Record<string, any>>(
+  tasks: T,
+  handleSettled: boolean
+): Promise<any> {
   const taskNames = Object.keys(tasks) as (keyof T)[]
   const results = new Map<keyof T, any>()
+  const errors = new Map<keyof T, any>()
   const resolvers = new Map<
     keyof T,
     [(value: any) => void, (reason?: any) => void][]
@@ -64,6 +69,9 @@ export function all<T extends Record<string, any>>(
     if (results.has(depName)) {
       return Promise.resolve(results.get(depName))
     }
+    if (errors.has(depName)) {
+      return Promise.reject(errors.get(depName))
+    }
     return new Promise((resolve, reject) => {
       if (!resolvers.has(depName)) {
         resolvers.set(depName, [])
@@ -74,7 +82,11 @@ export function all<T extends Record<string, any>>(
 
   const handleResult = (name: keyof T, value: any) => {
     results.set(name, value)
-    returnValue[name as string] = value
+    if (handleSettled) {
+      returnValue[name as string] = { status: 'fulfilled', value }
+    } else {
+      returnValue[name as string] = value
+    }
     if (resolvers.has(name)) {
       for (const [resolve] of resolvers.get(name)!) {
         resolve(value)
@@ -83,6 +95,10 @@ export function all<T extends Record<string, any>>(
   }
 
   const handleError = (name: keyof T, err: any) => {
+    errors.set(name, err)
+    if (handleSettled) {
+      returnValue[name as string] = { status: 'rejected', reason: err }
+    }
     if (resolvers.has(name)) {
       for (const [, reject] of resolvers.get(name)!) {
         reject(err)
@@ -112,9 +128,71 @@ export function all<T extends Record<string, any>>(
       handleResult(name, result)
     } catch (err) {
       handleError(name, err)
-      throw err
+      if (!handleSettled) {
+        throw err
+      }
     }
   })
 
-  return Promise.all(promises).then(() => returnValue as AllResult<T>)
+  if (handleSettled) {
+    // For allSettled, wait for all promises to settle (never rejects)
+    return Promise.allSettled(promises).then(() => returnValue)
+  } else {
+    // For all, reject on first error (like Promise.all)
+    return Promise.all(promises).then(() => returnValue)
+  }
+}
+
+/**
+ * Execute tasks with automatic dependency resolution.
+ *
+ * @example
+ * const { a, b, c } = await all({
+ *   async a() { return 1 },
+ *   async b() { return 'hello' },
+ *   async c() { return (await this.$.a) + 10 }
+ * })
+ */
+export function all<T extends Record<string, any>>(
+  tasks: T &
+    ThisType<{
+      $: {
+        [K in keyof T]: ReturnType<T[K]> extends Promise<infer R>
+          ? Promise<R>
+          : Promise<ReturnType<T[K]>>
+      }
+    }> & {
+      [P in keyof T]: T[P] extends (...args: any[]) => any ? T[P] : never
+    }
+): Promise<AllResult<T>> {
+  return executeTasksInternal(tasks, false) as Promise<AllResult<T>>
+}
+
+/**
+ * Execute tasks with automatic dependency resolution, returning settled results for all tasks.
+ * Unlike `all`, this will never reject - failed tasks will be included in the result with their error.
+ *
+ * @example
+ * const { a, b, c } = await allSettled({
+ *   async a() { return 1 },
+ *   async b() { throw new Error('failed') },
+ *   async c() { return (await this.$.a) + 10 }
+ * })
+ * // a: { status: 'fulfilled', value: 1 }
+ * // b: { status: 'rejected', reason: Error('failed') }
+ * // c: { status: 'fulfilled', value: 11 }
+ */
+export function allSettled<T extends Record<string, any>>(
+  tasks: T &
+    ThisType<{
+      $: {
+        [K in keyof T]: ReturnType<T[K]> extends Promise<infer R>
+          ? Promise<R>
+          : Promise<ReturnType<T[K]>>
+      }
+    }> & {
+      [P in keyof T]: T[P] extends (...args: any[]) => any ? T[P] : never
+    }
+): Promise<AllSettledResult<T>> {
+  return executeTasksInternal(tasks, true) as Promise<AllSettledResult<T>>
 }

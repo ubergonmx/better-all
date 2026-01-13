@@ -1,1 +1,1 @@
-export { all, type Task } from './lib/index'
+export { all, allSettled, type Task } from './lib/index'

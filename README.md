@@ -100,6 +100,17 @@ Execute tasks with automatic dependency resolution.
 - `tasks`: Object of async task functions
 - Each task function receives `this.$` - an object with promises for all task results
 - Returns a promise that resolves to an object with all task results
+- Rejects if any task fails (like `Promise.all`)
+
+### `allSettled(tasks)`
+
+Execute tasks with automatic dependency resolution, returning settled results for all tasks.
+
+- `tasks`: Object of async task functions
+- Each task function receives `this.$` - an object with promises for all task results
+- Returns a promise that resolves to an object with all task results as `{ status: 'fulfilled', value }` or `{ status: 'rejected', reason }`
+- Never rejects - failed tasks are included in the result (like `Promise.allSettled`)
+- If a task depends on a failed task, the dependent task will also fail unless it catches the error
 
 ## Examples
 
@@ -192,6 +203,8 @@ This still gives optimal parallelization.
 
 ## Error Handling
 
+### With `all()`
+
 Errors propagate to dependent tasks automatically, similar to `Promise.all`:
 
 ```typescript
@@ -203,6 +216,58 @@ try {
 } catch (err) {
   console.error(err) // Error: Failed
 }
+```
+
+### With `allSettled()`
+
+All tasks complete and return their settled state, never rejecting:
+
+```typescript
+const result = await allSettled({
+  async a() { return 1 },
+  async b() { throw new Error('Task b failed') },
+  async c() { return 3 }
+})
+
+// result.a: { status: 'fulfilled', value: 1 }
+// result.b: { status: 'rejected', reason: Error('Task b failed') }
+// result.c: { status: 'fulfilled', value: 3 }
+
+if (result.a.status === 'fulfilled') {
+  console.log(result.a.value) // 1
+}
+
+if (result.b.status === 'rejected') {
+  console.error(result.b.reason) // Error: Task b failed
+}
+```
+
+### Handling Dependency Failures with `allSettled()`
+
+When a task depends on a failed task, it will also fail unless the error is caught:
+
+```typescript
+const result = await allSettled({
+  async a() { throw new Error('a failed') },
+  async b() {
+    // This will fail because 'a' failed
+    const aValue = await this.$.a
+    return aValue + 10
+  },
+  async c() {
+    // This handles the error and succeeds
+    try {
+      const aValue = await this.$.a
+      return aValue + 10
+    } catch (err) {
+      return 'fallback value'
+    }
+  }
+})
+
+// result.a: { status: 'rejected', reason: Error('a failed') }
+// result.b: { status: 'rejected', reason: Error('a failed') }
+// result.c: { status: 'fulfilled', value: 'fallback value' }
 ```
 
 ## Development

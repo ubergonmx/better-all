@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, expectTypeOf } from 'vitest'
-import { all } from './index'
+import { all, allSettled } from './index'
 
 describe('all', () => {
   describe('Basic parallel execution', () => {
@@ -524,17 +524,21 @@ describe('all', () => {
     })
 
     it('should error on non-function task definitions', async () => {
-      await all({
-        // @ts-expect-error
-        invalidTask: 1,
-      })
+      await expect(
+        all({
+          // @ts-expect-error
+          invalidTask: 1,
+        })
+      ).rejects.toThrow('Task "invalidTask" is not a function')
 
-      await all({
-        // @ts-expect-error
-        invalidTask: {
-          a: 1,
-        },
-      })
+      await expect(
+        all({
+          // @ts-expect-error
+          invalidTask: {
+            a: 1,
+          },
+        })
+      ).rejects.toThrow('Task "invalidTask" is not a function')
     })
   })
 
@@ -682,6 +686,374 @@ describe('all', () => {
       })
 
       expect(result).toEqual({ a: 1, b: 11 })
+    })
+  })
+})
+
+describe('allSettled', () => {
+  describe('Basic execution with mixed results', () => {
+    it('should return fulfilled and rejected results without throwing', async () => {
+      const result = await allSettled({
+        async a() {
+          return 1
+        },
+        async b() {
+          throw new Error('Task b failed')
+        },
+        async c() {
+          return 3
+        },
+      })
+
+      expect(result.a).toEqual({ status: 'fulfilled', value: 1 })
+      expect(result.b).toEqual({
+        status: 'rejected',
+        reason: expect.any(Error),
+      })
+      expect(result.b.status === 'rejected' && result.b.reason.message).toBe(
+        'Task b failed'
+      )
+      expect(result.c).toEqual({ status: 'fulfilled', value: 3 })
+    })
+
+    it('should handle all tasks succeeding', async () => {
+      const result = await allSettled({
+        a() {
+          return 1
+        },
+        async b() {
+          return 'hello'
+        },
+        async c() {
+          return true
+        },
+      })
+
+      expect(result).toEqual({
+        a: { status: 'fulfilled', value: 1 },
+        b: { status: 'fulfilled', value: 'hello' },
+        c: { status: 'fulfilled', value: true },
+      })
+    })
+
+    it('should handle all tasks failing', async () => {
+      const result = await allSettled({
+        async a() {
+          throw new Error('a failed')
+        },
+        async b() {
+          throw new Error('b failed')
+        },
+      })
+
+      expect(result.a).toEqual({
+        status: 'rejected',
+        reason: expect.any(Error),
+      })
+      expect(result.b).toEqual({
+        status: 'rejected',
+        reason: expect.any(Error),
+      })
+    })
+  })
+
+  describe('Dependency resolution with failures', () => {
+    it('should handle successful task depending on another successful task', async () => {
+      const result = await allSettled({
+        async a() {
+          return 1
+        },
+        async b() {
+          const aValue = await this.$.a
+          return aValue + 10
+        },
+      })
+
+      expect(result).toEqual({
+        a: { status: 'fulfilled', value: 1 },
+        b: { status: 'fulfilled', value: 11 },
+      })
+    })
+
+    it('should handle task depending on failed task', async () => {
+      const result = await allSettled({
+        async a() {
+          throw new Error('Task a failed')
+        },
+        async b() {
+          const aValue = await this.$.a
+          return aValue + 10
+        },
+      })
+
+      expect(result.a).toEqual({
+        status: 'rejected',
+        reason: expect.any(Error),
+      })
+      expect(result.b).toEqual({
+        status: 'rejected',
+        reason: expect.any(Error),
+      })
+    })
+
+    it('should allow dependent task to catch and handle dependency failure', async () => {
+      const result = await allSettled({
+        async a() {
+          throw new Error('Task a failed')
+        },
+        async b() {
+          try {
+            const aValue = await this.$.a
+            return aValue + 10
+          } catch (err) {
+            return 'handled error'
+          }
+        },
+      })
+
+      expect(result.a).toEqual({
+        status: 'rejected',
+        reason: expect.any(Error),
+      })
+      expect(result.b).toEqual({
+        status: 'fulfilled',
+        value: 'handled error',
+      })
+    })
+
+    it('should handle multiple tasks depending on one failed task', async () => {
+      const result = await allSettled({
+        async a() {
+          throw new Error('Task a failed')
+        },
+        async b() {
+          const aValue = await this.$.a
+          return aValue + 10
+        },
+        async c() {
+          const aValue = await this.$.a
+          return aValue + 100
+        },
+      })
+
+      expect(result.a.status).toBe('rejected')
+      expect(result.b.status).toBe('rejected')
+      expect(result.c.status).toBe('rejected')
+    })
+
+    it('should not block independent tasks when one fails', async () => {
+      const executionOrder: string[] = []
+
+      const result = await allSettled({
+        async a() {
+          await new Promise((resolve) => setTimeout(resolve, 10))
+          executionOrder.push('a')
+          throw new Error('a failed')
+        },
+        async b() {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          executionOrder.push('b')
+          return 2
+        },
+        async c() {
+          await new Promise((resolve) => setTimeout(resolve, 15))
+          executionOrder.push('c')
+          return 3
+        },
+      })
+
+      expect(executionOrder).toEqual(['b', 'a', 'c'])
+      expect(result.a.status).toBe('rejected')
+      expect(result.b).toEqual({ status: 'fulfilled', value: 2 })
+      expect(result.c).toEqual({ status: 'fulfilled', value: 3 })
+    })
+  })
+
+  describe('Complex scenarios', () => {
+    it('should handle complex dependency graph with mixed results', async () => {
+      const result = await allSettled({
+        async a() {
+          return 1
+        },
+        async b() {
+          throw new Error('b failed')
+        },
+        async c() {
+          const aValue = await this.$.a
+          return aValue + 10
+        },
+        async d() {
+          const bValue = await this.$.b
+          return bValue + 20
+        },
+        async e() {
+          const cValue = await this.$.c
+          return cValue + 100
+        },
+      })
+
+      expect(result.a).toEqual({ status: 'fulfilled', value: 1 })
+      expect(result.b.status).toBe('rejected')
+      expect(result.c).toEqual({ status: 'fulfilled', value: 11 })
+      expect(result.d.status).toBe('rejected')
+      expect(result.e).toEqual({ status: 'fulfilled', value: 111 })
+    })
+
+    it('should handle partial failure in API call pattern', async () => {
+      const mockFetch = vi.fn()
+
+      // user and settings run in parallel, posts depends on user
+      // Order of execution: user (1st call), settings (2nd call), posts (3rd call)
+      mockFetch
+        .mockResolvedValueOnce({ id: 1, name: 'User' }) // user call
+        .mockResolvedValueOnce({ theme: 'dark' }) // settings call (parallel)
+        .mockRejectedValueOnce(new Error('Posts API failed')) // posts call (after user)
+
+      const result = await allSettled({
+        async user() {
+          return mockFetch('/user/1')
+        },
+        async posts() {
+          const user = await this.$.user
+          return mockFetch(`/user/${user.id}/posts`)
+        },
+        async settings() {
+          return mockFetch('/settings')
+        },
+      })
+
+      expect(result.user).toEqual({
+        status: 'fulfilled',
+        value: { id: 1, name: 'User' },
+      })
+      expect(result.posts.status).toBe('rejected')
+      expect(result.settings).toEqual({
+        status: 'fulfilled',
+        value: { theme: 'dark' },
+      })
+    })
+  })
+
+  describe('Edge cases', () => {
+    it('should handle empty object', async () => {
+      const result = await allSettled({})
+      expect(result).toEqual({})
+    })
+
+    it('should handle single successful task', async () => {
+      const result = await allSettled({
+        a() {
+          return 1
+        },
+      })
+      expect(result).toEqual({
+        a: { status: 'fulfilled', value: 1 },
+      })
+    })
+
+    it('should handle single failed task', async () => {
+      const result = await allSettled({
+        async a() {
+          throw new Error('failed')
+        },
+      })
+      expect(result.a.status).toBe('rejected')
+    })
+
+    it('should preserve different error types', async () => {
+      const customError = new TypeError('type error')
+      const result = await allSettled({
+        async a() {
+          throw customError
+        },
+        async b() {
+          throw 'string error'
+        },
+        async c() {
+          throw { code: 'CUSTOM', message: 'object error' }
+        },
+      })
+
+      expect(result.a).toEqual({
+        status: 'rejected',
+        reason: customError,
+      })
+      expect(result.b).toEqual({
+        status: 'rejected',
+        reason: 'string error',
+      })
+      expect(result.c).toEqual({
+        status: 'rejected',
+        reason: { code: 'CUSTOM', message: 'object error' },
+      })
+    })
+  })
+
+  describe('Type inference', () => {
+    it('should infer correct types for settled results', async () => {
+      const result = await allSettled({
+        num() {
+          return 42
+        },
+        str() {
+          return 'hello'
+        },
+        async asyncNum() {
+          return 123
+        },
+      })
+
+      expectTypeOf(result.num).toEqualTypeOf<
+        { status: 'fulfilled'; value: 42 } | { status: 'rejected'; reason: any }
+      >()
+      expectTypeOf(result.str).toEqualTypeOf<
+        | { status: 'fulfilled'; value: 'hello' }
+        | { status: 'rejected'; reason: any }
+      >()
+
+      if (result.num.status === 'fulfilled') {
+        expect(result.num.value).toBe(42)
+      }
+      if (result.str.status === 'fulfilled') {
+        expect(result.str.value).toBe('hello')
+      }
+      if (result.asyncNum.status === 'fulfilled') {
+        expect(result.asyncNum.value).toBe(123)
+      }
+    })
+  })
+
+  describe('Return value types', () => {
+    it('should handle various return types in fulfilled results', async () => {
+      const result = await allSettled({
+        num() {
+          return 42
+        },
+        str() {
+          return 'hello'
+        },
+        arr() {
+          return [1, 2, 3]
+        },
+        obj() {
+          return { key: 'value' }
+        },
+        nil() {
+          return null
+        },
+        undef() {
+          return undefined
+        },
+      })
+
+      expect(result).toEqual({
+        num: { status: 'fulfilled', value: 42 },
+        str: { status: 'fulfilled', value: 'hello' },
+        arr: { status: 'fulfilled', value: [1, 2, 3] },
+        obj: { status: 'fulfilled', value: { key: 'value' } },
+        nil: { status: 'fulfilled', value: null },
+        undef: { status: 'fulfilled', value: undefined },
+      })
     })
   })
 })
