@@ -51,6 +51,9 @@ const [[a, c], b] = await Promise.all([
 
 This quickly becomes unmanageable in real-world scenarios with many tasks and complex dependencies, not to mention the loss of readability.
 
+In real-world application code, there are more downsides of the naive approach and ad-hoc promise adjustments.
+[Give this a read](https://github.com/shuding/better-all/discussions/3) if you are still not convinced.
+
 ## Better `Promise.all`
 
 **This library solves it automatically:**
