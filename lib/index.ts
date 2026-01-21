@@ -183,6 +183,9 @@ function executeTasksInternal<T extends Record<string, any>>(
   // Create internal abort controller for auto-abort on failure and external signal propagation
   const internalController = new AbortController()
 
+  // Controller to manage cleanup of the external signal listener
+  const cleanupController = new AbortController()
+
   // If external signal is provided, propagate its abort to internal controller
   if (options.signal) {
     if (options.signal.aborted) {
@@ -191,7 +194,7 @@ function executeTasksInternal<T extends Record<string, any>>(
       options.signal.addEventListener(
         'abort',
         () => internalController.abort(options.signal!.reason),
-        { once: true }
+        { once: true, signal: cleanupController.signal }
       )
     }
   }
@@ -362,9 +365,14 @@ function executeTasksInternal<T extends Record<string, any>>(
     : // For all, reject on first error (like Promise.all)
       Promise.all(promises).then(() => returnValue)
 
+  // Cleanup external signal listener when tasks complete
+  const withCleanup = finalPromise.finally(() => {
+    cleanupController.abort()
+  })
+
   // Output waterfall chart in debug mode
   if (options.debug) {
-    return finalPromise.then(
+    return withCleanup.then(
       (result) => {
         console.log(generateWaterfallChart(timings))
         return result
@@ -376,7 +384,7 @@ function executeTasksInternal<T extends Record<string, any>>(
     )
   }
 
-  return finalPromise
+  return withCleanup
 }
 
 /**
