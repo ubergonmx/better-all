@@ -1575,3 +1575,383 @@ describe('Debug mode', () => {
     })
   })
 })
+
+describe('Abort signal', () => {
+  describe('all() with $signal', () => {
+    it('should provide $signal as an AbortSignal', async () => {
+      let receivedSignal: AbortSignal | undefined
+
+      await all({
+        async a() {
+          receivedSignal = this.$signal
+          return 1
+        },
+      })
+
+      expect(receivedSignal).toBeInstanceOf(AbortSignal)
+    })
+
+    it('should abort $signal when a sibling task fails', async () => {
+      const abortEvents: string[] = []
+
+      await expect(
+        all({
+          async fast() {
+            throw new Error('fast failed')
+          },
+          async slow() {
+            this.$signal.addEventListener('abort', () => {
+              abortEvents.push('slow-aborted')
+            })
+            await sleep(50)
+            return 'slow done'
+          },
+        })
+      ).rejects.toThrow('fast failed')
+
+      // Give time for abort event to fire
+      await sleep(10)
+      expect(abortEvents).toContain('slow-aborted')
+    })
+
+    it('should set abort reason to the error that caused the failure', async () => {
+      let abortReason: any
+
+      const errorToThrow = new Error('task failed')
+
+      await expect(
+        all({
+          async failing() {
+            throw errorToThrow
+          },
+          async waiting() {
+            this.$signal.addEventListener('abort', () => {
+              abortReason = this.$signal.reason
+            })
+            await sleep(50)
+            return 'done'
+          },
+        })
+      ).rejects.toThrow('task failed')
+
+      await sleep(10)
+      expect(abortReason).toBe(errorToThrow)
+    })
+
+    it('should allow tasks to check signal.aborted', async () => {
+      let wasAborted = false
+      let checkCompleted = false
+
+      await expect(
+        all({
+          async failing() {
+            await sleep(10)
+            throw new Error('failed')
+          },
+          async checking() {
+            // Wait longer than failing task, then check abort status
+            await sleep(30)
+            wasAborted = this.$signal.aborted
+            checkCompleted = true
+            return 'done'
+          },
+        })
+      ).rejects.toThrow('failed')
+
+      // Wait for checking task to complete its check
+      await sleep(50)
+      expect(checkCompleted).toBe(true)
+      expect(wasAborted).toBe(true)
+    })
+
+    it('should propagate external signal abort to $signal', async () => {
+      const controller = new AbortController()
+      let internalAborted = false
+
+      const promise = all(
+        {
+          async task() {
+            this.$signal.addEventListener('abort', () => {
+              internalAborted = true
+            })
+            // Check signal and throw if aborted
+            await sleep(50)
+            if (this.$signal.aborted) {
+              throw this.$signal.reason
+            }
+            return 'done'
+          },
+        },
+        { signal: controller.signal }
+      )
+
+      // Abort after a short delay
+      await sleep(10)
+      controller.abort(new Error('external abort'))
+
+      await expect(promise).rejects.toThrow('external abort')
+      expect(internalAborted).toBe(true)
+    })
+
+    it('should handle already aborted external signal', async () => {
+      const controller = new AbortController()
+      controller.abort(new Error('pre-aborted'))
+
+      let signalAborted = false
+
+      await expect(
+        all(
+          {
+            async task() {
+              signalAborted = this.$signal.aborted
+              if (this.$signal.aborted) {
+                throw this.$signal.reason
+              }
+              return 'done'
+            },
+          },
+          { signal: controller.signal }
+        )
+      ).rejects.toThrow('pre-aborted')
+
+      expect(signalAborted).toBe(true)
+    })
+
+    it('should not abort other tasks until one actually fails', async () => {
+      const states: string[] = []
+
+      const result = await all({
+        async a() {
+          states.push('a-start')
+          await sleep(20)
+          states.push('a-end')
+          return 1
+        },
+        async b() {
+          states.push('b-start')
+          expect(this.$signal.aborted).toBe(false)
+          await sleep(10)
+          expect(this.$signal.aborted).toBe(false)
+          states.push('b-end')
+          return 2
+        },
+      })
+
+      expect(result).toEqual({ a: 1, b: 2 })
+      expect(states).toContain('a-end')
+      expect(states).toContain('b-end')
+    })
+  })
+
+  describe('allSettled() with $signal', () => {
+    it('should provide $signal as an AbortSignal', async () => {
+      let receivedSignal: AbortSignal | undefined
+
+      await allSettled({
+        async a() {
+          receivedSignal = this.$signal
+          return 1
+        },
+      })
+
+      expect(receivedSignal).toBeInstanceOf(AbortSignal)
+    })
+
+    it('should NOT abort $signal when a sibling task fails', async () => {
+      const abortEvents: string[] = []
+
+      const result = await allSettled({
+        async fast() {
+          throw new Error('fast failed')
+        },
+        async slow() {
+          this.$signal.addEventListener('abort', () => {
+            abortEvents.push('slow-aborted')
+          })
+          await sleep(30)
+          return 'slow done'
+        },
+      })
+
+      // Give time for any abort event to fire (it should NOT)
+      await sleep(10)
+
+      expect(result.fast.status).toBe('rejected')
+      expect(result.slow).toEqual({ status: 'fulfilled', value: 'slow done' })
+      expect(abortEvents).not.toContain('slow-aborted')
+    })
+
+    it('should NOT set signal.aborted when a sibling task fails', async () => {
+      let wasAborted = false
+
+      const result = await allSettled({
+        async failing() {
+          throw new Error('failed')
+        },
+        async checking() {
+          await sleep(20)
+          wasAborted = this.$signal.aborted
+          return 'done'
+        },
+      })
+
+      expect(result.failing.status).toBe('rejected')
+      expect(result.checking).toEqual({ status: 'fulfilled', value: 'done' })
+      expect(wasAborted).toBe(false)
+    })
+
+    it('should still propagate external signal abort to $signal', async () => {
+      const controller = new AbortController()
+      let internalAborted = false
+
+      const promise = allSettled(
+        {
+          async task() {
+            this.$signal.addEventListener('abort', () => {
+              internalAborted = true
+            })
+            await sleep(100)
+            return 'done'
+          },
+        },
+        { signal: controller.signal }
+      )
+
+      // Abort after a short delay
+      await sleep(10)
+      controller.abort(new Error('external abort'))
+
+      const result = await promise
+      expect(internalAborted).toBe(true)
+      // Task still completes since allSettled never rejects
+      expect(result.task).toBeDefined()
+    })
+  })
+
+  describe('External signal options', () => {
+    it('should pass external signal reason when aborting', async () => {
+      const controller = new AbortController()
+      const customReason = { code: 'TIMEOUT', message: 'Request timed out' }
+      let receivedReason: any
+
+      const promise = all(
+        {
+          async task() {
+            this.$signal.addEventListener('abort', () => {
+              receivedReason = this.$signal.reason
+            })
+            await sleep(50)
+            // Check signal and throw if aborted
+            if (this.$signal.aborted) {
+              throw new Error('Task aborted')
+            }
+            return 'done'
+          },
+        },
+        { signal: controller.signal }
+      )
+
+      await sleep(10)
+      controller.abort(customReason)
+
+      await expect(promise).rejects.toThrow('Task aborted')
+      expect(receivedReason).toBe(customReason)
+    })
+
+    it('should work without signal option (backwards compatibility)', async () => {
+      const result = await all({
+        async a() {
+          return 1
+        },
+        async b() {
+          return (await this.$.a) + 10
+        },
+      })
+
+      expect(result).toEqual({ a: 1, b: 11 })
+    })
+
+    it('should work with signal option and dependencies', async () => {
+      const controller = new AbortController()
+
+      const result = await all(
+        {
+          async a() {
+            return 1
+          },
+          async b() {
+            return (await this.$.a) + 10
+          },
+        },
+        { signal: controller.signal }
+      )
+
+      expect(result).toEqual({ a: 1, b: 11 })
+    })
+  })
+
+  describe('Real-world abort scenarios', () => {
+    it('should allow aborting fetch-like operations', async () => {
+      // Simulate fetch with abort support
+      const mockFetch = (signal: AbortSignal): Promise<string> => {
+        return new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => resolve('data'), 100)
+          signal.addEventListener('abort', () => {
+            clearTimeout(timeout)
+            reject(new Error('Aborted'))
+          })
+        })
+      }
+
+      await expect(
+        all({
+          async failing() {
+            await sleep(10)
+            throw new Error('API error')
+          },
+          async fetching() {
+            return mockFetch(this.$signal)
+          },
+        })
+      ).rejects.toThrow('API error')
+    })
+
+    it('should handle multiple concurrent abort-aware tasks', async () => {
+      const completedTasks: string[] = []
+
+      const mockOperation = (name: string, signal: AbortSignal): Promise<string> => {
+        return new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            completedTasks.push(name)
+            resolve(name)
+          }, 50)
+          signal.addEventListener('abort', () => {
+            clearTimeout(timeout)
+            reject(new Error(`${name} aborted`))
+          })
+        })
+      }
+
+      await expect(
+        all({
+          async failing() {
+            await sleep(10)
+            throw new Error('First failure')
+          },
+          async task1() {
+            return mockOperation('task1', this.$signal)
+          },
+          async task2() {
+            return mockOperation('task2', this.$signal)
+          },
+          async task3() {
+            return mockOperation('task3', this.$signal)
+          },
+        })
+      ).rejects.toThrow('First failure')
+
+      // None of the mock operations should have completed
+      expect(completedTasks).toEqual([])
+    })
+  })
+})

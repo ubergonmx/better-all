@@ -93,6 +93,7 @@ yarn add better-all
 - **Automatic maximal parallelization**: Independent tasks run in parallel
 - **Object-based API**: Minimal cognitive load, easy to read
 - **No hanging promises**: Avoids the uncaught dangling promises problem often seen in manual optimization
+- **Auto-abort on failure**: Cancel remaining tasks when one fails via `this.$signal`
 - **Debug mode with waterfall visualization**: See exactly how tasks execute with ASCII waterfall charts
 - **Lightweight**: Minimal dependencies and small bundle size
 
@@ -105,7 +106,10 @@ Execute tasks with automatic dependency resolution.
 - `tasks`: Object of async task functions
 - `options`: Optional configuration object
   - `debug`: Set to `true` to output a waterfall chart showing task execution timeline
-- Each task function receives `this.$` - an object with promises for all task results
+  - `signal`: An `AbortSignal` to abort all tasks externally
+- Each task function receives:
+  - `this.$` - an object with promises for all task results
+  - `this.$signal` - an `AbortSignal` that aborts when any sibling task fails
 - Returns a promise that resolves to an object with all task results
 - Rejects if any task fails (like `Promise.all`)
 
@@ -116,7 +120,10 @@ Execute tasks with automatic dependency resolution, returning settled results fo
 - `tasks`: Object of async task functions
 - `options`: Optional configuration object
   - `debug`: Set to `true` to output a waterfall chart showing task execution timeline
-- Each task function receives `this.$` - an object with promises for all task results
+  - `signal`: An `AbortSignal` to abort all tasks externally
+- Each task function receives:
+  - `this.$` - an object with promises for all task results
+  - `this.$signal` - an `AbortSignal` (only aborts on external signal, not on sibling failure)
 - Returns a promise that resolves to an object with all task results as `{ status: 'fulfilled', value }` or `{ status: 'rejected', reason }`
 - Never rejects - failed tasks are included in the result (like `Promise.allSettled`)
 - If a task depends on a failed task, the dependent task will also fail unless it catches the error
@@ -350,6 +357,39 @@ const result = await allSettled({
 // result.b: { status: 'rejected', reason: Error('a failed') }
 // result.c: { status: 'fulfilled', value: 'fallback value' }
 ```
+
+## Abort Signal
+
+When a task fails in `all()`, you may want to cancel other running tasks to avoid wasting resources (e.g., API calls, LLM requests).
+
+Each task receives `this.$signal` - an `AbortSignal` that gets aborted when any sibling task fails:
+
+```typescript
+const result = await all({
+  async fetchUser() {
+    const res = await fetch('/api/user', { signal: this.$signal })
+    return res.json()
+  },
+  async fetchPosts() {
+    // If fetchUser fails, this.$signal will be aborted
+    const res = await fetch('/api/posts', { signal: this.$signal })
+    return res.json()
+  }
+})
+```
+
+You can also pass an external signal to respect parent abort controllers:
+
+```typescript
+const controller = new AbortController()
+
+const result = await all({
+  async a() { return fetchData(this.$signal) },
+  async b() { return fetchMoreData(this.$signal) }
+}, { signal: controller.signal })
+```
+
+**Note:** `allSettled()` does NOT auto-abort on task failure (to preserve its "wait for all" behavior), but external signal abort still works.
 
 ## Development
 

@@ -20,6 +20,7 @@ type DepProxy<T extends Record<string, (...args: any[]) => any>> = {
 // Context available to each task via `this`
 type TaskContext<T extends Record<string, (...args: any[]) => any>> = {
   $: DepProxy<T>
+  $signal: AbortSignal
 }
 
 // Result type - all tasks resolved to their return values
@@ -48,6 +49,7 @@ type AllSettledResult<T extends Record<string, (...args: any[]) => any>> = {
 // Options for all() and allSettled()
 type ExecutionOptions = {
   debug?: boolean
+  signal?: AbortSignal
 }
 
 // Tracking info for debug mode
@@ -178,6 +180,25 @@ function executeTasksInternal<T extends Record<string, any>>(
   >()
   const returnValue: Record<string, any> = {}
 
+  // Create internal abort controller for auto-abort on failure and external signal propagation
+  const internalController = new AbortController()
+
+  // Controller to manage cleanup of the external signal listener
+  const cleanupController = new AbortController()
+
+  // If external signal is provided, propagate its abort to internal controller
+  if (options.signal) {
+    if (options.signal.aborted) {
+      internalController.abort(options.signal.reason)
+    } else {
+      options.signal.addEventListener(
+        'abort',
+        () => internalController.abort(options.signal!.reason),
+        { once: true, signal: cleanupController.signal }
+      )
+    }
+  }
+
   // Debug tracking
   const timings: TaskTiming[] = []
   const taskStartTimes = new Map<keyof T, number>()
@@ -291,7 +312,10 @@ function executeTasksInternal<T extends Record<string, any>>(
         },
       })
 
-      const context: TaskContext<T> = { $: depProxy }
+      const context: TaskContext<T> = {
+        $: depProxy,
+        $signal: internalController.signal,
+      }
       const result = await taskFn.call(context)
 
       // Track end time and create timing record
@@ -328,6 +352,8 @@ function executeTasksInternal<T extends Record<string, any>>(
 
       handleError(name, err)
       if (!handleSettled) {
+        // Abort other tasks when one fails (only for all(), not allSettled())
+        internalController.abort(err)
         throw err
       }
     }
@@ -339,9 +365,14 @@ function executeTasksInternal<T extends Record<string, any>>(
     : // For all, reject on first error (like Promise.all)
       Promise.all(promises).then(() => returnValue)
 
+  // Cleanup external signal listener when tasks complete
+  const withCleanup = finalPromise.finally(() => {
+    cleanupController.abort()
+  })
+
   // Output waterfall chart in debug mode
   if (options.debug) {
-    return finalPromise.then(
+    return withCleanup.then(
       (result) => {
         console.log(generateWaterfallChart(timings))
         return result
@@ -353,7 +384,7 @@ function executeTasksInternal<T extends Record<string, any>>(
     )
   }
 
-  return finalPromise
+  return withCleanup
 }
 
 /**
@@ -372,6 +403,21 @@ function executeTasksInternal<T extends Record<string, any>>(
  *   async a() { return 1 },
  *   async b() { return (await this.$.a) + 10 }
  * }, { debug: true })
+ *
+ * @example
+ * // With auto-abort on failure - this.$signal is aborted when any sibling task fails
+ * const result = await all({
+ *   async a() { return fetchWithSignal(this.$signal) },
+ *   async b() { throw new Error('fails') }, // This will abort tasks a and c
+ *   async c() { return fetchWithSignal(this.$signal) }
+ * })
+ *
+ * @example
+ * // With external signal
+ * const controller = new AbortController()
+ * const result = await all({
+ *   async a() { return fetchWithSignal(this.$signal) }
+ * }, { signal: controller.signal })
  */
 export function all<T extends Record<string, any>>(
   tasks: T &
@@ -381,6 +427,7 @@ export function all<T extends Record<string, any>>(
           ? Promise<R>
           : Promise<ReturnType<T[K]>>
       }
+      $signal: AbortSignal
     }> & {
       [P in keyof T]: T[P] extends (...args: any[]) => any ? T[P] : never
     },
@@ -418,6 +465,7 @@ export function allSettled<T extends Record<string, any>>(
           ? Promise<R>
           : Promise<ReturnType<T[K]>>
       }
+      $signal: AbortSignal
     }> & {
       [P in keyof T]: T[P] extends (...args: any[]) => any ? T[P] : never
     },
