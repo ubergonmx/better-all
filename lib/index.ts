@@ -82,9 +82,9 @@ function generateWaterfallChart(timings: TaskTiming[]): string {
   const maxNameLength = Math.max(...timings.map((t) => t.name.length))
   const maxDepsLength = Math.max(
     ...timings.map((t) =>
-      t.dependencies.length > 0 ? t.dependencies.join(', ').length : 0
+      t.dependencies.length > 0 ? t.dependencies.join(', ').length : 0,
     ),
-    4 // minimum for "Deps" header
+    4, // minimum for "Deps" header
   )
 
   // Calculate scale (how many ms per character)
@@ -102,17 +102,17 @@ function generateWaterfallChart(timings: TaskTiming[]): string {
   output +=
     '╠════════════════════════════════════════════════════════════════════════════════╣\n'
   output += `║ Total Duration: ${totalDurationString}ms${' '.repeat(
-    61 - totalDurationString.length
+    61 - totalDurationString.length,
   )}║\n`
   output +=
     '╚════════════════════════════════════════════════════════════════════════════════╝\n\n'
 
   // Header
   output += `${'Task'.padEnd(maxNameLength)} │ ${'Deps'.padEnd(
-    maxDepsLength
+    maxDepsLength,
   )} │ Duration │ Timeline\n`
   output += `${'─'.repeat(maxNameLength)}─┼─${'─'.repeat(
-    maxDepsLength
+    maxDepsLength,
   )}─┼──────────┼─${'─'.repeat(chartWidth)}\n`
 
   // Sort by start time
@@ -143,7 +143,7 @@ function generateWaterfallChart(timings: TaskTiming[]): string {
         // Check if this position is in a wait period
         const absoluteTime = startTime + timePos
         const isWaiting = timing.waitPeriods.some(
-          (wait) => absoluteTime >= wait.start && absoluteTime < wait.end
+          (wait) => absoluteTime >= wait.start && absoluteTime < wait.end,
         )
 
         if (isWaiting) {
@@ -174,7 +174,7 @@ function generateWaterfallChart(timings: TaskTiming[]): string {
 function executeTasksInternal<T extends Record<string, any>>(
   tasks: T,
   handleSettled: boolean,
-  options: InternalExecutionOptions = {}
+  options: InternalExecutionOptions = {},
 ): Promise<any> {
   const taskNames = Object.keys(tasks) as (keyof T)[]
   const results = new Map<keyof T, any>()
@@ -203,7 +203,7 @@ function executeTasksInternal<T extends Record<string, any>>(
       options.signal.addEventListener(
         'abort',
         () => internalController.abort(options.signal!.reason),
-        { once: true, signal: cleanupController.signal }
+        { once: true, signal: cleanupController.signal },
       )
     }
   }
@@ -273,7 +273,7 @@ function executeTasksInternal<T extends Record<string, any>>(
             .get(taskName)!
             .push({ start: waitStart, end: waitEnd })
           throw error
-        }
+        },
       )
     }
 
@@ -449,7 +449,7 @@ function executeTasksInternal<T extends Record<string, any>>(
       (error) => {
         console.log(generateWaterfallChart(timings))
         throw error
-      }
+      },
     )
   }
 
@@ -498,9 +498,11 @@ export function all<T extends Record<string, any>>(
       }
       $signal: AbortSignal
     }> & {
-      [P in keyof T]: T[P] extends (...args: any[]) => any ? T[P] : never
+      [K in keyof T as T[K] extends Function
+        ? K
+        : `Error: task \`${K & string}\` is not a function`]-?: T[K]
     },
-  options?: ExecutionOptions
+  options?: ExecutionOptions,
 ): Promise<AllResult<T>> {
   return executeTasksInternal(tasks, false, options) as Promise<AllResult<T>>
 }
@@ -538,7 +540,7 @@ export function allSettled<T extends Record<string, any>>(
     }> & {
       [P in keyof T]: T[P] extends (...args: any[]) => any ? T[P] : never
     },
-  options?: ExecutionOptions
+  options?: ExecutionOptions,
 ): Promise<AllSettledResult<T>> {
   return executeTasksInternal(tasks, true, options) as Promise<
     AllSettledResult<T>
@@ -570,7 +572,7 @@ class FlowAbortedError extends Error {
 // Context available to each task in flow via `this`
 type FlowTaskContext<
   T extends Record<string, (...args: any[]) => any>,
-  R
+  R,
 > = {
   $: DepProxy<T>
   $signal: AbortSignal
@@ -636,7 +638,7 @@ export function flow<R, T extends Record<string, any> = Record<string, any>>(
     }> & {
       [P in keyof T]: T[P] extends (...args: any[]) => any ? T[P] : never
     },
-  options?: ExecutionOptions
+  options?: ExecutionOptions,
 ): Promise<R | undefined> {
   return executeTasksInternal(tasks, false, {
     ...options,
