@@ -1,6 +1,6 @@
 {
   "name": "better-all",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Better Promise.all with automatic dependency optimization",
   "type": "module",
   "main": "./dist/es/index.js",
