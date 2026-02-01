@@ -95,6 +95,7 @@ yarn add better-all
 - **No hanging promises**: Avoids the uncaught dangling promises problem often seen in manual optimization
 - **Auto-abort on failure**: Cancel remaining tasks when one fails via `this.$signal`
 - **Debug mode with waterfall visualization**: See exactly how tasks execute with ASCII waterfall charts
+- **Early exit support**: Exit flows early when a result is determined
 - **Lightweight**: Minimal dependencies and small bundle size
 
 ## API
@@ -127,6 +128,22 @@ Execute tasks with automatic dependency resolution, returning settled results fo
 - Returns a promise that resolves to an object with all task results as `{ status: 'fulfilled', value }` or `{ status: 'rejected', reason }`
 - Never rejects - failed tasks are included in the result (like `Promise.allSettled`)
 - If a task depends on a failed task, the dependent task will also fail unless it catches the error
+
+### `flow<R>(tasks, options?)`
+
+Execute tasks with automatic dependency resolution and early exit support.
+
+- **Type parameter `<R>`**: **Required**. Specifies the return type that `$end()` must accept
+- `tasks`: Object of async task functions
+- `options`: Same as `all()` - optional configuration object
+- Each task function receives:
+  - `this.$` - an object with promises for all task results
+  - `this.$signal` - an `AbortSignal` for resource cleanup
+  - `this.$end(value: R)` - function to exit the entire flow early with a return value of type `R`
+- Returns a promise that resolves to `R | undefined`
+  - Returns the value passed to the first `$end()` call
+  - Returns `undefined` if no task calls `$end()`
+- See [Early Exit Flow](#early-exit-flow) for detailed usage
 
 ## Examples
 
@@ -390,6 +407,121 @@ const result = await all({
 ```
 
 **Note:** `allSettled()` does NOT auto-abort on task failure (to preserve its "wait for all" behavior), but external signal abort still works.
+
+## Early Exit Flow
+
+`flow` allows you to exit early from complex async flows when a task determines the final result. This is useful for optimization patterns like:
+
+- **Cache checks**: Exit early if cached data is available
+- **Racing operations**: Return the first successful result
+- **Conditional computations**: Skip remaining work based on intermediate results
+
+### `flow(tasks, options?)`
+
+Execute tasks with automatic dependency resolution, but allow any task to end the entire flow early by calling `this.$end(value)`.
+
+**Key behaviors:**
+- All tasks start together in parallel (same as `all()`)
+- First task to call `this.$end(value)` determines the return value
+- After `$end()` is called, other tasks that try to access dependencies will receive errors (caught silently)
+- Real errors (not from `$end`) still propagate to the caller
+- Integrates with `this.$signal` for resource cleanup
+
+### Early Exit from Cache
+
+```typescript
+import { flow } from 'better-all'
+
+const data = await flow<YourDataType>({
+  async checkCache() {
+    const cached = await getFromCache('key')
+    if (cached) this.$end(cached)  // Exit early with cached data
+    return null
+  },
+  async fetchFromApi() {
+    const user = await this.$.checkCache  // Will throw if cache hit
+    return await fetchExpensiveData()
+  },
+  async processData() {
+    const apiData = await this.$.fetchFromApi
+    this.$end(transform(apiData))
+  }
+})
+```
+
+### Racing Operations
+
+```typescript
+const result = await flow<ResponseData>({
+  async fetchFromPrimary() {
+    await sleep(100)
+    const data = await fetch('/api/primary')
+    this.$end(await data.json())
+  },
+  async fetchFromBackup() {
+    await sleep(500)
+    const data = await fetch('/api/backup')
+    this.$end(await data.json())
+  }
+})
+// Returns data from whichever endpoint responds first
+```
+
+### Conditional Early Exit
+
+```typescript
+const result = await flow<{ error: string } | ProcessedData>({
+  async validateInput() {
+    const isValid = await validate(input)
+    if (!isValid) this.$end({ error: 'Invalid input' })
+    return input
+  },
+  async processData() {
+    const validInput = await this.$.validateInput
+    const processed = await heavyComputation(validInput)
+    this.$end({ success: true, data: processed })
+  }
+})
+```
+
+### Return Type
+
+You must specify the return type as a type parameter to `flow`:
+
+```typescript
+const result = await flow<number | string>({
+  async task1() {
+    this.$end(42)  // number
+    return 1
+  },
+  async task2() {
+    this.$end('hello')  // string
+    return 'world'
+  }
+})
+// result: number | string | undefined
+```
+
+To explicitly allow `undefined` as a return value:
+
+```typescript
+// Explicitly allow undefined
+const result = await flow<string | undefined>({
+  async task1() {
+    const data = await getData()
+    if (!data) this.$end(undefined)  // ✅ OK: undefined is in the type parameter
+    this.$end(data)
+  }
+})
+// result: string | undefined
+```
+
+**⚠️ Important Notes:**
+- The type parameter `<R>` is **required** and specifies what type `$end()` accepts
+- If you want to call `$end(undefined)`, you must explicitly include `undefined` in `R` (e.g., `flow<undefined>` or `flow<string | undefined>`)
+- If no task calls `this.$end()`, the flow will return `undefined`
+- Once `$end()` is called, subsequent dependency accesses will fail (but are caught silently)
+- `$end()` stops the current task execution (throws internally)
 
 ## Development
 

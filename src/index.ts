@@ -1,1 +1,1 @@
-export { all, allSettled } from '../lib/index'
+export { all, allSettled, flow } from '../lib/index'
