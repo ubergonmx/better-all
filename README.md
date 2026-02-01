@@ -502,8 +502,23 @@ const result = await flow<number | string>({
 // result: number | string | undefined
 ```
 
+To explicitly allow `undefined` as a return value:
+
+```typescript
+// Explicitly allow undefined
+const result = await flow<string | undefined>({
+  async task1() {
+    const data = await getData()
+    if (!data) this.$end(undefined)  // ✅ OK: undefined is in the type parameter
+    this.$end(data)
+  }
+})
+// result: string | undefined
+```
+
 **⚠️ Important Notes:**
 - The type parameter `<R>` is **required** and specifies what type `$end()` accepts
+- If you want to call `$end(undefined)`, you must explicitly include `undefined` in `R` (e.g., `flow<undefined>` or `flow<string | undefined>`)
 - If no task calls `this.$end()`, the flow will return `undefined`
 - Once `$end()` is called, subsequent dependency accesses will fail (but are caught silently)
 - `$end()` stops the current task execution (throws internally)
